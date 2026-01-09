@@ -765,8 +765,12 @@ def train_epoch(model, optimizer, data_loader,
         Loss over the provided data.
     """
     model.train()
-    train_loss = 0
     train_loss_avg = []
+
+    # Optimization: Track total loss on GPU/MPS to avoid CPU syncs
+    total_loss_sum = 0.0
+    total_samples = 0
+
     if verbose:
         pbar = tqdm(total=len(data_loader.dataset))
     for batch_idx, data in enumerate(data_loader):
@@ -781,16 +785,29 @@ def train_epoch(model, optimizer, data_loader,
 
         optimizer.zero_grad()
         loss = -model.log_probs(data, cond_data)
-        train_loss += loss.mean().item()
-        train_loss_avg.extend(loss.tolist())
+
+        # --- OPTIMIZATION START ---
+        # Backpropagate immediately (Async on MPS)
         loss.mean().backward()
         optimizer.step()
 
+        # Accumulate metrics purely on the device (No .item(), No .tolist())
+        # We perform the sum on GPU and detach from graph to save memory
+        with torch.no_grad():
+            batch_sum = loss.sum().detach()
+            total_loss_sum += batch_sum
+            total_samples += data.size(0)
+
+        # Update Progress Bar (Calculate avg only for display, maybe every N steps)
         if verbose:
             pbar.update(data.size(0))
-            pbar.set_description(
-                "Train, Log likelihood in nats: {:.6f}".format(
-                    -train_loss / (batch_idx + 1)))
+            # Calculate rolling average only for print (still causes slight sync but acceptable)
+            # If this is still slow, remove the set_description call
+            if batch_idx % 20 == 0: # Reduce frequency of updates
+                current_avg = (batch_sum / data.size(0)).item() 
+                pbar.set_description(
+                    "Train, Log likelihood in nats: {:.6f}".format(-current_avg))
+        # --- OPTIMIZATION END ---
 
     if verbose:
         pbar.close()
@@ -810,4 +827,10 @@ def train_epoch(model, optimizer, data_loader,
             if isinstance(module, fnn.BatchNormFlow):
                 module.momentum = 1
 
-    return (np.array(train_loss_avg).flatten().mean(), )
+    # Required by new optimization: Only move data to CPU once at the end
+    if isinstance(total_loss_sum, torch.Tensor):
+        final_avg_loss = (total_loss_sum / total_samples).item()
+    else:
+        final_avg_loss = total_loss_sum / total_samples
+
+    return (final_avg_loss, )
