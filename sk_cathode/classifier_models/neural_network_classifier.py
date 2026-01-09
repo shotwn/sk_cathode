@@ -58,6 +58,9 @@ class NeuralNetworkClassifier(BaseEstimator):
         stopping is used.
     no_gpu : bool, default=False
         Turns off GPU usages. By default the GPU is used if available.
+    device : torch.device or str, optional
+        Device to run the model on. If None, the device is chosen automatically
+        (CUDA if available, then MPS if available, else CPU).
     val_split : float, default=0.2
         Fraction of the training set to use for validation. Only has an
         effect if no validation set is provided to the fit method.
@@ -77,7 +80,7 @@ class NeuralNetworkClassifier(BaseEstimator):
     def __init__(self, save_path=None, load=False, n_inputs=4,
                  layers=[64, 64, 64], lr=0.001, early_stopping=False,
                  patience=10, no_gpu=False, val_split=0.2, batch_size=128,
-                 epochs=100, use_class_weights=True, verbose=False):
+                 epochs=100, use_class_weights=True, verbose=False, device=None):
 
         self.save_path = save_path
         if save_path is not None:
@@ -89,12 +92,34 @@ class NeuralNetworkClassifier(BaseEstimator):
         self.n_inputs = n_inputs
         self.layers = layers
         self.lr = lr
-        self.no_gpu = no_gpu
         self.model = NeuralNetwork(layers, n_inputs=n_inputs)
         self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
         self.loss = F.binary_cross_entropy
-        self.device = torch.device("cuda:0" if torch.cuda.is_available()
-                                   and not no_gpu else "cpu")
+
+        self.no_gpu = no_gpu
+        if device:
+            self.device = device
+
+            # See if it's a valid torch device
+            if not isinstance(self.device, torch.device):
+                try:
+                    self.device = torch.device(self.device)
+                except Exception as e:
+                    raise ValueError(f"Invalid device specified: {self.device}"
+                                     ) from e
+            
+            # Ensure no_gpu is consistent with device
+            if self.device.type != "cpu" and no_gpu:
+                print("Warning: no_gpu is True but a non-CPU device was "
+                      "specified. Overriding no_gpu to False.")
+                self.no_gpu = False
+        else:
+            # Cuda, Metal or CPU
+            self.device = torch.device("cuda:0" if torch.cuda.is_available()
+                                       and not no_gpu else
+                                       "mps" if torch.backends.mps.is_available()
+                                       and not no_gpu else "cpu")
+
         self.early_stopping = early_stopping
         self.patience = patience
         self.val_split = val_split

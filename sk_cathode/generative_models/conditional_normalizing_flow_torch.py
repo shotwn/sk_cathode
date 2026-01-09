@@ -71,6 +71,9 @@ class ConditionalNormalizingFlow(BaseEstimator):
         stopping is used.
     no_gpu : bool, default=False
         Turns off GPU usages. By default the GPU is used if available.
+    device : torch.device or str, optional
+        Device to run the model on. If None, the device is chosen automatically
+        (CUDA if available, then MPS if available, else CPU).
     val_split : float, default=0.2
         Fraction of the training set to use for validation. Only has an
         effect if no validation set is provided to the fit method.
@@ -96,7 +99,7 @@ class ConditionalNormalizingFlow(BaseEstimator):
                  pre_exp_tanh=False, batch_norm=True, batch_norm_momentum=1,
                  lr=0.0001, weight_decay=0.000001, early_stopping=False,
                  patience=10, no_gpu=False, val_split=0.2, batch_size=256,
-                 drop_last=True, epochs=100, verbose=False):
+                 drop_last=True, epochs=100, verbose=False, device=None):
 
         self.model_type = model_type
         self.transformation = transformation
@@ -116,8 +119,29 @@ class ConditionalNormalizingFlow(BaseEstimator):
         self.load = load
 
         self.no_gpu = no_gpu
-        self.device = torch.device("cuda:0" if torch.cuda.is_available()
-                                   and not no_gpu else "cpu")
+        if device:
+            self.device = device
+
+            # See if it's a valid torch device
+            if not isinstance(self.device, torch.device):
+                try:
+                    self.device = torch.device(self.device)
+                except Exception as e:
+                    raise ValueError(f"Invalid device specified: {self.device}"
+                                     ) from e
+            
+            # Ensure no_gpu is consistent with device
+            if self.device.type != "cpu" and no_gpu:
+                print("Warning: no_gpu is True but a non-CPU device was "
+                      "specified. Overriding no_gpu to False.")
+                self.no_gpu = False
+        else:
+            # Cuda, Metal or CPU
+            self.device = torch.device("cuda:0" if torch.cuda.is_available()
+                                       and not no_gpu else
+                                       "mps" if torch.backends.mps.is_available()
+                                       and not no_gpu else "cpu")
+            
         self.early_stopping = early_stopping
         self.patience = patience
         self.val_split = val_split
